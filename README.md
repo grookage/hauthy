@@ -755,52 +755,9 @@ grep -i "jmx" /var/log/hbase/hbase-*.log | grep -i error
 
 ---
 
-## Project Structure
-
-```
-hauthy/
-├── pom.xml                                    # Maven build configuration
-├── README.md                                  # This documentation
-├── src/
-│   ├── main/
-│   │   ├── java/com/grookage/hauthy/
-│   │   │   ├── core/
-│   │   │   │   ├── AuthMode.java              # Enum: SIMPLE, KERBEROS, UNKNOWN
-│   │   │   │   ├── DualModeSaslServer.java    # Core dual-mode SASL implementation
-│   │   │   │   └── HauthyConfig.java          # Configuration holder with defaults
-│   │   │   ├── factory/
-│   │   │   │   └── DualModeSaslServerFactory.java  # SASL server factory
-│   │   │   ├── provider/
-│   │   │   │   ├── HauthySecurityProvider.java    # Java Security Provider
-│   │   │   │   └── HauthyInitializer.java         # Bootstrap and initialization
-│   │   │   ├── coprocessor/
-│   │   │   │   └── HauthyCoprocessor.java     # HBase coprocessor for auto-init
-│   │   │   └── metrics/
-│   │   │       ├── AuthMetrics.java           # JMX metrics implementation
-│   │   │       └── AuthMetricsMXBean.java     # JMX MBean interface
-│   │   └── resources/
-│   │       └── META-INF/services/
-│   │           └── java.security.Provider     # SPI registration for auto-discovery
-│   └── test/
-│       ├── java/com/grookage/hauthy/         # Unit tests (JUnit 5 + Mockito)
-│       └── resources/
-│           └── krb5.conf                      # Test Kerberos configuration
-├── conf/
-│   ├── hbase-site.xml.dual-mode              # Example: migration phase config
-│   └── hbase-site.xml.kerberos-only          # Example: post-migration config
-└── scripts/
-    ├── build.sh                              # Build JAR
-    ├── deploy.sh                             # Deploy to cluster
-    ├── verify.sh                             # Verify installation
-    ├── enable-dual-mode.sh                   # Enable dual-mode config
-    └── disable-simple-mode.sh                # Disable simple auth
-```
-
----
-
 ## Contributing
 
-We welcome contributions! Please follow these guidelines:
+Contributions are welcome! Please follow these guidelines:
 
 ### Getting Started
 

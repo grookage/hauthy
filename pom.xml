@@ -5,7 +5,7 @@
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.grookage</groupId>
+    <groupId>com.grookage.apps</groupId>
     <artifactId>hauthy</artifactId>
     <version>0.0.1-RC1</version>
     <packaging>jar</packaging>
