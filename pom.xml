@@ -1,0 +1,341 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.grookage</groupId>
+    <artifactId>hauthy</artifactId>
+    <version>0.0.1-RC1</version>
+    <packaging>jar</packaging>
+
+    <name>Hauthy - HBase Dual-Mode Authentication</name>
+    <description>
+        Enables dual-mode authentication (Simple + Kerberos) for HBase,
+        allowing zero-downtime migration to Kerberos authentication.
+    </description>
+
+    <properties>
+        <!-- Build Versions -->
+        <nexus.staging.plguin.version>1.7.0</nexus.staging.plguin.version>
+        <maven.surefire.plugin.version>3.5.4</maven.surefire.plugin.version>
+        <maven.compiler.version>3.14.1</maven.compiler.version>
+        <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
+        <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
+        <maven.javadoc.plugin.version>3.6.3</maven.javadoc.plugin.version>
+        <java.version>17</java.version>
+
+        <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+        <sonar.organization>grookage</sonar.organization>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- IMPORTANT: Match your cluster's exact versions -->
+        <hbase.version>2.4.17</hbase.version>
+        <hadoop.version>3.3.4</hadoop.version>
+        <slf4j.version>1.7.36</slf4j.version>
+        <lombok.version>1.18.34</lombok.version>
+
+        <!-- Test dependencies -->
+        <junit.jupiter.version>5.10.1</junit.jupiter.version>
+        <mockito.version>5.8.0</mockito.version>
+    </properties>
+
+    <dependencies>
+        <!-- HBase dependencies (provided - already on classpath at runtime) -->
+        <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-server</artifactId>
+            <version>${hbase.version}</version>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-log4j12</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-client</artifactId>
+            <version>${hbase.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-common</artifactId>
+            <version>${hbase.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Hadoop dependencies (provided) -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-common</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-log4j12</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-auth</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Logging (provided) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Lombok for reducing boilerplate -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>${java.version}</release>
+                    <source>${java.version}</source>
+                    <target>${java.version}</target>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <artifactId>asm</artifactId>
+                        <groupId>org.ow2.asm</groupId>
+                        <version>7.2</version>
+                    </dependency>
+                </dependencies>
+                <groupId>org.apache.maven.plugins</groupId>
+                <version>${maven.compiler.version}</version>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                            <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
+                        </manifest>
+                        <manifestEntries>
+                            <HBase-Version>${hbase.version}</HBase-Version>
+                            <Hadoop-Version>${hadoop.version}</Hadoop-Version>
+                            <Build-Timestamp>${maven.build.timestamp}</Build-Timestamp>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <id>test</id>
+                        <phase>test</phase>
+                    </execution>
+                </executions>
+                <configuration>
+                    <argLine>-Djava.security.krb5.conf=${project.basedir}/src/test/resources/krb5.conf</argLine>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/*IntegrationTest.java</exclude>
+                    </excludes>
+                </configuration>
+                <version>${maven.surefire.plugin.version}</version>
+            </plugin>
+
+            <plugin>
+                <artifactId>findbugs-maven-plugin</artifactId>
+                <groupId>org.codehaus.mojo</groupId>
+                <version>3.0.3</version>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-source-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <id>attach-sources</id>
+                    </execution>
+                </executions>
+                <groupId>org.apache.maven.plugins</groupId>
+                <version>${maven.source.plugin.version}</version>
+            </plugin>
+
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.5.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <autoPublish>true</autoPublish>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.1.2</version>
+                <configuration>
+                    <includes>
+                        <include>**/*IntegrationTest.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <plugin>
+                <groupId>org.sonatype.plugins</groupId>
+                <artifactId>nexus-staging-maven-plugin</artifactId>
+                <version>1.7.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <serverId>ossrh</serverId>
+                    <nexusUrl>https://s01.oss.sonatype.org/</nexusUrl>
+                    <autoReleaseAfterClose>true</autoReleaseAfterClose>
+                    <stagingProgressTimeoutMinutes>10</stagingProgressTimeoutMinutes>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-gpg-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <configuration>
+                            <executable>gpg</executable>
+                            <useAgent>true</useAgent>
+                        </configuration>
+                        <goals>
+                            <goal>sign</goal>
+                        </goals>
+                        <id>sign-artifacts</id>
+                        <phase>verify</phase>
+                    </execution>
+                </executions>
+                <groupId>org.apache.maven.plugins</groupId>
+                <version>${maven.gpg.plugin.version}</version>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <configuration>
+                    <source>${java.version}</source>
+                    <doclint>none</doclint>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <id>attach-javadocs</id>
+                    </execution>
+                </executions>
+                <groupId>org.apache.maven.plugins</groupId>
+                <version>${maven.javadoc.plugin.version}</version>
+            </plugin>
+
+        </plugins>
+    </build>
+
+    <developers>
+        <developer>
+            <email>rkoushik.14@gmail.com</email>
+            <id>koushikr</id>
+            <name>Koushik Ramachandra</name>
+        </developer>
+    </developers>
+
+    <distributionManagement>
+        <repository>
+            <id>ossrh</id>
+            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+        </repository>
+        <snapshotRepository>
+            <id>ossrh</id>
+            <url>https://s01.oss.sonatype.org/content/repositories/snapshots</url>
+        </snapshotRepository>
+    </distributionManagement>
+
+    <inceptionYear>2026</inceptionYear>
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/grookage/hauthy/issues</url>
+    </issueManagement>
+    <licenses>
+        <license>
+            <comments>A business-friendly OSS license</comments>
+            <distribution>repo</distribution>
+            <name>The Apache Software License, Version 2.0</name>
+            <url>http://www.apache.org/licenses/LICENSE-2.0.txt</url>
+        </license>
+    </licenses>
+
+
+</project>
