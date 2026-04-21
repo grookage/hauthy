@@ -18,6 +18,7 @@ Hauthy (HBase AUTHentication hYbrid) enables **zero-downtime migration** from un
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
+- [ZooKeeper Dual-Mode Configuration](#zookeeper-dual-mode-configuration)
 - [Migration Guide](#migration-guide)
 - [Monitoring & Metrics](#monitoring--metrics)
 - [Security Considerations](#security-considerations)
@@ -36,6 +37,21 @@ This is particularly valuable for:
 - **Large-scale production clusters** with hundreds of client applications
 - **Cross-datacenter replication** setups where both clusters need to remain operational
 - **Organizations** that cannot afford maintenance windows for security migrations
+
+---
+
+### Scope & Limitations
+
+⚠️ **Hauthy operates at the HBase SASL/RPC layer only.** It does not handle:
+
+| Layer | Hauthy Handles? | Notes |
+|-------|-----------------|-------|
+| HBase RPC Authentication | ✅ Yes | Primary use case |
+| ZooKeeper Authentication | ❌ No | Requires separate ZK dual-mode config |
+| Hadoop RPC Authentication | ❌ No | May need `hadoop.security.authentication` changes |
+| HBase Client Auth Negotiation | ❌ No | Client decides auth mode before connecting |
+
+**For cross-cluster replication** between Simple and Kerberos clusters, you must also configure ZooKeeper for dual-mode. See [ZooKeeper Dual-Mode Configuration](#zookeeper-dual-mode-configuration).
 
 ---
 
@@ -373,6 +389,110 @@ Add the following to `hbase-site.xml` on all nodes:
 
 ---
 
+## ZooKeeper Dual-Mode Configuration
+
+⚠️ **Important for Cross-Cluster Replication:** If you need to support replication between clusters with different authentication modes, you must also configure ZooKeeper to allow both authenticated and unauthenticated clients. Hauthy only handles HBase RPC authentication — ZooKeeper authentication is a separate layer.
+
+### Why ZooKeeper Configuration Matters
+
+HBase replication flow requires connecting to the destination cluster's ZooKeeper before reaching HBase:
+
+```
+Source Cluster (Simple Auth)
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│  1. Connect to Destination ZooKeeper                    │  ◀── Requires ZK dual-mode
+│     (to lookup meta table location)                     │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│  2. Connect to HBase RegionServer                       │  ◀── Hauthy handles this
+│     (for actual replication)                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Configuring ZooKeeper for Dual-Mode
+
+**1. Configure `zoo.cfg` on all ZK nodes:**
+
+```properties
+# Enable SASL authentication
+authProvider.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
+
+# CRITICAL: Allow clients without SASL to connect
+sessionRequireClientSASLAuth=false
+
+# Optional: Set SASL authentication scheme
+zookeeper.authProvider.sasl=org.apache.zookeeper.server.auth.SASLAuthenticationProvider
+```
+
+**2. Configure JAAS file for ZK Server (`zk_server_jaas.conf`):**
+
+```
+Server {
+    com.sun.security.auth.module.Krb5LoginModule required
+    useKeyTab=true
+    keyTab="/etc/security/keytabs/zookeeper.service.keytab"
+    storeKey=true
+    useTicketCache=false
+    principal="zookeeper/hostname@REALM";
+};
+```
+
+**3. Set JVM options for ZooKeeper:**
+
+```bash
+export SERVER_JVMFLAGS="-Djava.security.auth.login.config=/path/to/zk_server_jaas.conf -Dzookeeper.allowSaslFailedClients=true"
+```
+
+### Key ZooKeeper Properties
+
+| Property | Value | Purpose |
+|----------|-------|---------|
+| `sessionRequireClientSASLAuth` | `false` | **Critical** - Allows non-SASL clients to connect |
+| `zookeeper.allowSaslFailedClients` | `true` | Allows clients that fail SASL to fall back to no-auth |
+| `authProvider.1` | `SASLAuthenticationProvider` | Enables SASL/Kerberos authentication |
+
+### ZooKeeper ACLs for Dual-Mode
+
+When ZK accepts both authentication modes, configure ACLs to allow unauthenticated reads for HBase metadata:
+
+```bash
+# Create znodes with world:anyone for data that unauthenticated clients need
+create /hbase world:anyone:cdrwa
+
+# Or use multiple ACLs (authenticated users get full access, others get read)
+setAcl /hbase sasl:hbase:cdrwa,world:anyone:r
+```
+
+### Complete Migration Flow with ZK + HBase Dual-Mode
+
+```
+Phase 1: Enable ZooKeeper Dual-Mode
+├── Set sessionRequireClientSASLAuth=false on all ZK nodes
+├── Rolling restart ZK ensemble
+└── Verify: Both SASL and non-SASL clients can connect
+
+Phase 2: Enable HBase Dual-Mode (Hauthy)
+├── Deploy Hauthy to all HBase nodes
+├── Configure hbase-site.xml for dual-mode
+└── Rolling restart HBase
+
+Phase 3: Migrate Clients
+├── Clients migrate to Kerberos at their own pace
+└── Monitor KerberosPercentage metric
+
+Phase 4: Lock Down (Post-Migration)
+├── Set hauthy.allow.simple=false (HBase)
+├── Set sessionRequireClientSASLAuth=true (ZK)
+└── Rolling restart both ZK and HBase
+```
+
+---
+
+
 ## Migration Guide
 
 ### Phase 1: Preparation (1-2 weeks before migration)
@@ -416,7 +536,7 @@ ls -la /etc/security/keytabs/hbase.service.keytab
    kinit user@REALM
    hbase shell -n <<< "status 'detailed'"
    ```
-
+   
 5. **Check Hauthy metrics are available:**
    ```bash
    curl -s "http://<regionserver>:16030/jmx?qry=com.grookage.hauthy:*"
