@@ -1,18 +1,3 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.metrics;
 
 /**
@@ -21,6 +6,7 @@ package com.grookage.hauthy.metrics;
  * <p>This interface defines the metrics exposed via JMX for monitoring
  * the dual-mode authentication migration progress.</p>
  */
+@SuppressWarnings("unused")
 public interface AuthMetricsMXBean {
 
     /**
@@ -74,4 +60,15 @@ public interface AuthMetricsMXBean {
      * @return percentage of Kerberos connections (0-100)
      */
     double getKerberosPercentage();
+
+    /**
+     * Get the count of ZK SASL no-op fallbacks (KDC server-not-found → skip auth).
+     *
+     * <p>Fires when DualModeSaslClient detects the target ZK server principal
+     * is missing from the KDC and falls back to an unauthenticated session.
+     * Non-zero means cross-cluster replication is using the no-op path.</p>
+     *
+     * @return count of ZK SASL no-op fallbacks
+     */
+    long getZkSaslNoOpFallback();
 }

@@ -1,23 +1,9 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.core;
 
 import lombok.Builder;
 import lombok.Getter;
 import lombok.ToString;
+import lombok.val;
 import org.apache.hadoop.conf.Configuration;
 
 import java.util.Arrays;
@@ -54,6 +40,7 @@ public class HauthyConfig {
     public static final String SIMPLE_USER_MAPPING = "hauthy.simple.user.mapping";
     public static final String METRICS_ENABLED = "hauthy.metrics.enabled";
     public static final String METRICS_JMX_DOMAIN = "hauthy.metrics.jmx.domain";
+    public static final String ZK_SASL_FALLBACK = "hauthy.zk.sasl.fallback";
 
     // Defaults
     private static final boolean DEFAULT_ENABLED = false;
@@ -63,6 +50,7 @@ public class HauthyConfig {
     private static final boolean DEFAULT_USER_MAPPING = true;
     private static final boolean DEFAULT_METRICS_ENABLED = true;
     private static final String DEFAULT_JMX_DOMAIN = "com.grookage.hauthy";
+    private static final boolean DEFAULT_ZK_SASL_FALLBACK = false;
 
     /**
      * Whether dual-mode authentication is enabled.
@@ -114,6 +102,15 @@ public class HauthyConfig {
     private final String metricsJmxDomain = DEFAULT_JMX_DOMAIN;
 
     /**
+     * Whether ZK SASL no-op fallback is enabled.
+     * When true, DualModeSaslClient falls back to unauthenticated ZK session
+     * if the target ZK server principal is missing from KDC (error 7).
+     * Only enable during Kerberos migration windows.
+     */
+    @Builder.Default
+    private final boolean zkSaslFallback = DEFAULT_ZK_SASL_FALLBACK;
+
+    /**
      * Load configuration from Hadoop Configuration.
      *
      * @param conf Hadoop configuration
@@ -125,8 +122,8 @@ public class HauthyConfig {
         }
 
         // Parse allowed hosts
-        var allowedHosts = Collections.<String>emptySet();
-        final var hostsStr = conf.get(SIMPLE_ALLOWED_HOSTS, "*");
+        Set<String> allowedHosts = Collections.emptySet();
+        val hostsStr = conf.get(SIMPLE_ALLOWED_HOSTS, "*");
         if (!"*".equals(hostsStr) && !hostsStr.isEmpty()) {
             allowedHosts = new HashSet<>(Arrays.asList(hostsStr.split(",")));
         }
@@ -135,11 +132,12 @@ public class HauthyConfig {
                 .enabled(conf.getBoolean(HAUTHY_ENABLED, DEFAULT_ENABLED))
                 .allowSimple(conf.getBoolean(ALLOW_SIMPLE, DEFAULT_ALLOW_SIMPLE))
                 .allowKerberos(conf.getBoolean(ALLOW_KERBEROS, DEFAULT_ALLOW_KERBEROS))
-                .simpleAllowedHosts(allowedHosts)
+                .simpleAllowedHosts(Collections.unmodifiableSet(allowedHosts))
                 .simpleDefaultUser(conf.get(SIMPLE_DEFAULT_USER, DEFAULT_SIMPLE_USER))
                 .simpleUserMapping(conf.getBoolean(SIMPLE_USER_MAPPING, DEFAULT_USER_MAPPING))
                 .metricsEnabled(conf.getBoolean(METRICS_ENABLED, DEFAULT_METRICS_ENABLED))
                 .metricsJmxDomain(conf.get(METRICS_JMX_DOMAIN, DEFAULT_JMX_DOMAIN))
+                .zkSaslFallback(conf.getBoolean(ZK_SASL_FALLBACK, DEFAULT_ZK_SASL_FALLBACK))
                 .build();
     }
 
@@ -153,31 +151,24 @@ public class HauthyConfig {
         if (!allowSimple) {
             return false;
         }
-
-        // Empty set means all hosts allowed
         if (simpleAllowedHosts.isEmpty()) {
             return true;
         }
-
         if (host == null) {
             return false;
         }
-
-        // Check exact match or pattern match
-        for (String allowed : simpleAllowedHosts) {
+        return simpleAllowedHosts.stream().anyMatch(allowed -> {
             if (allowed.equals(host)) {
                 return true;
             }
-            // Simple wildcard matching (e.g., "10.0.1.*")
             if (allowed.endsWith("*")) {
-                String prefix = allowed.substring(0, allowed.length() - 1);
-                if (host.startsWith(prefix)) {
-                    return true;
-                }
+                return host.startsWith(allowed.substring(0, allowed.length() - 1));
             }
-        }
-
-        return false;
+            if (allowed.startsWith("*")) {
+                return host.endsWith(allowed.substring(1));
+            }
+            return false;
+        });
     }
 
     /**

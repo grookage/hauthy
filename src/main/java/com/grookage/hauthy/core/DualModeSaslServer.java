@@ -1,34 +1,28 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.core;
 
 import com.grookage.hauthy.metrics.AuthMetrics;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 
 import javax.security.auth.Subject;
 import javax.security.auth.callback.CallbackHandler;
 import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
+import javax.security.sasl.SaslServerFactory;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
+import java.security.Provider;
+import java.security.Security;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Dual-mode SASL server that accepts both Kerberos (GSSAPI) and Simple authentication.
@@ -76,14 +70,12 @@ public class DualModeSaslServer implements SaslServer {
     // Metrics
     private final AuthMetrics metrics;
     // State
-    private SaslServer delegateSaslServer;
-    @Getter
-    private AuthMode selectedAuthMode;
-    private String authorizationId;
-    private boolean isComplete = false;
+    private final AtomicReference<SaslServer> delegateSaslServer = new AtomicReference<>();
+    private final AtomicReference<AuthMode> selectedAuthMode = new AtomicReference<>();
+    private final AtomicReference<String> authorizationId = new AtomicReference<>();
+    private final AtomicBoolean isComplete = new AtomicBoolean(false);
     @Getter
     private boolean simpleMode = false;
-    // Connection info
     @Setter
     @Getter
     private String clientAddress;
@@ -110,16 +102,15 @@ public class DualModeSaslServer implements SaslServer {
                 config.isAllowSimple(), config.isAllowKerberos());
     }
 
+    public AuthMode getSelectedAuthMode() {
+        return selectedAuthMode.get();
+    }
+
     @Override
     public byte[] evaluateResponse(byte[] response) throws SaslException {
         try {
-            if (delegateSaslServer == null) {
-                // First message - determine auth mode
-                return handleInitialResponse(response);
-            } else {
-                // Subsequent messages - delegate to selected SASL server
-                return delegateEvaluateResponse(response);
-            }
+            return null == delegateSaslServer.get() ?
+                    handleInitialResponse(response) : delegateEvaluateResponse(response);
         } catch (SaslException e) {
             log.error("SASL evaluation failed for client {}: {}", clientAddress, e.getMessage());
             throw e;
@@ -131,19 +122,23 @@ public class DualModeSaslServer implements SaslServer {
      */
     private byte[] handleInitialResponse(byte[] response) throws SaslException {
         // Determine which authentication mode the client is using
-        final var requestedMode = detectAuthMode(response);
+        val requestedMode = detectAuthMode(response);
         log.debug("Client {} requesting auth mode: {}", clientAddress, requestedMode);
 
         // Validate the requested mode is allowed
         validateAuthMode(requestedMode);
-
-        this.selectedAuthMode = requestedMode;
+        this.selectedAuthMode.set(requestedMode);
 
         // Create the appropriate SASL server
-        return switch (requestedMode) {
-            case KERBEROS -> initKerberosAuth(response);
-            case SIMPLE, ANONYMOUS -> initSimpleAuth(response);
-        };
+        switch (requestedMode) {
+            case KERBEROS:
+                return initKerberosAuth(response);
+            case SIMPLE:
+            case ANONYMOUS:
+                return initSimpleAuth(response);
+            default:
+                throw new SaslException("Unknown auth mode: " + requestedMode);
+        }
     }
 
     /**
@@ -159,24 +154,31 @@ public class DualModeSaslServer implements SaslServer {
         if (response == null || response.length == 0) {
             return AuthMode.SIMPLE;
         }
+        return isGssapiToken(response) ? AuthMode.KERBEROS : AuthMode.SIMPLE;
+    }
 
-        // Check for GSSAPI token (starts with specific ASN.1 header)
-        // GSSAPI tokens start with 0x60 (APPLICATION 0 SEQUENCE)
-        if ((response[0] & 0xFF) == 0x60) {
-            return AuthMode.KERBEROS;
+    /**
+     * Detect GSSAPI token by checking ASN.1 structure.
+     * GSSAPI tokens: APPLICATION 0 SEQUENCE (0x60) with valid length encoding.
+     */
+    private boolean isGssapiToken(byte[] data) {
+        if (data.length < 2 || (data[0] & 0xFF) != 0x60) {
+            return false;
         }
 
-        // Check for SASL mechanism name in the response
-        try {
-            final var responseStr = new String(response, StandardCharsets.UTF_8);
-            if (responseStr.contains("GSSAPI")) {
-                return AuthMode.KERBEROS;
-            }
-        } catch (Exception e) {
-            // Ignore - might be binary data
+        // Validate ASN.1 length encoding
+        val lengthByte = data[1] & 0xFF;
+        if (lengthByte < 0x80) {
+            // Short form: length byte is the length
+            return data.length >= 2 + lengthByte;
+        } else if (lengthByte == 0x80) {
+            // Indefinite length - valid for GSSAPI
+            return true;
+        } else {
+            // Long form: lower 7 bits = number of length bytes
+            int numLengthBytes = lengthByte & 0x7F;
+            return data.length > 1 + numLengthBytes;
         }
-
-        return AuthMode.SIMPLE;
     }
 
     /**
@@ -201,7 +203,6 @@ public class DualModeSaslServer implements SaslServer {
                             "Simple authentication is disabled. Please use Kerberos authentication.");
                 }
 
-                // Check if this host is allowed for simple auth
                 if (!config.isSimpleAuthAllowedForHost(clientAddress)) {
                     metrics.recordSimpleRejected();
                     log.warn("Simple auth rejected for client {} - host not in allowed list",
@@ -218,52 +219,108 @@ public class DualModeSaslServer implements SaslServer {
 
     /**
      * Initialize Kerberos (GSSAPI) authentication.
+     *
+     * <p>IMPORTANT: must use {@link #createNativeGssapiServer} rather than
+     * {@code Sasl.createSaslServer("GSSAPI", ...)} here. Because Hauthy registers
+     * itself as the highest-priority SaslServerFactory.GSSAPI provider, calling
+     * Sasl.createSaslServer("GSSAPI") would recurse back into DualModeSaslServer,
+     * causing infinite recursion and a StackOverflowError.</p>
      */
     private byte[] initKerberosAuth(byte[] response) throws SaslException {
         log.debug("Initializing Kerberos auth for client {}", clientAddress);
 
         try {
             if (serverSubject != null) {
-                // Create GSSAPI SASL server under the server's Kerberos subject
-                delegateSaslServer = Subject.doAs(serverSubject,
-                        (PrivilegedExceptionAction<SaslServer>) () -> {
-                            final var props = new HashMap<String, String>();
-                            props.put(Sasl.QOP, "auth-conf,auth-int,auth");
-                            props.put(Sasl.SERVER_AUTH, "true");
-
-                            return Sasl.createSaslServer(
-                                    MECHANISM_GSSAPI,
-                                    "hbase",
-                                    getServerName(),
-                                    props,
-                                    callbackHandler
-                            );
-                        });
+                delegateSaslServer.set(Subject.doAs(serverSubject,
+                        (PrivilegedExceptionAction<SaslServer>) () ->
+                                createNativeGssapiServer(getServerName(), callbackHandler)));
             } else {
-                // Fallback if no subject (shouldn't happen in production)
                 log.warn("No server subject available for Kerberos auth");
-                final var props = new HashMap<String, String>();
-                props.put(Sasl.QOP, "auth");
+                delegateSaslServer.set(createNativeGssapiServer(getServerName(), callbackHandler));
+            }
 
-                delegateSaslServer = Sasl.createSaslServer(
-                        MECHANISM_GSSAPI,
-                        "hbase",
-                        getServerName(),
-                        props,
-                        callbackHandler
-                );
+            if (delegateSaslServer.get() == null) {
+                metrics.recordKerberosFailure();
+                throw new SaslException("Failed to create GSSAPI SASL server: no provider available");
             }
 
             this.simpleMode = false;
-
-            // Process the initial token
             return delegateEvaluateResponse(response);
-
         } catch (PrivilegedActionException e) {
             metrics.recordKerberosFailure();
-            final var cause = e.getCause();
+            val cause = e.getCause();
             throw new SaslException("Failed to create Kerberos SASL server: " +
                     (cause != null ? cause.getMessage() : e.getMessage()), cause);
+        } catch (SaslException e) {
+            metrics.recordKerberosFailure();
+            throw e;
+        }
+    }
+
+    /**
+     * Create a native GSSAPI SaslServer by explicitly skipping Hauthy's own provider.
+     *
+     * <p>Hauthy registers itself as {@code SaslServerFactory.GSSAPI} at position 1.
+     * If we used {@code Sasl.createSaslServer("GSSAPI", ...)} here, the JVM would
+     * pick Hauthy's factory again, creating another DualModeSaslServer as the delegate,
+     * which would again call this method — infinite recursion. We avoid this by
+     * iterating the provider list and skipping any provider named "Hauthy".</p>
+     */
+    /**
+     * Create a native GSSAPI SaslServer by explicitly skipping Hauthy's own provider.
+     */
+    private SaslServer createNativeGssapiServer(String serverName,
+                                                CallbackHandler cbh) throws SaslException {
+        val props = new HashMap<String, String>();
+        props.put(Sasl.QOP, "auth-conf,auth-int,auth");
+        props.put(Sasl.SERVER_AUTH, "true");
+
+        val providers = Security.getProviders("SaslServerFactory.GSSAPI");
+        if (providers == null || providers.length == 0) {
+            throw new SaslException("No GSSAPI providers found in JVM security configuration");
+        }
+
+        return Arrays.stream(providers)
+                .map(provider -> tryCreateFromProvider(provider, serverName, props, cbh))
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElseThrow(() -> new SaslException(
+                        "No native GSSAPI provider found (all providers excluding Hauthy were tried)"));
+    }
+
+    /**
+     * Attempt to create a GSSAPI server from a single provider.
+     *
+     * @return SaslServer if successful, null if provider should be skipped or failed
+     */
+    private SaslServer tryCreateFromProvider(Provider provider,
+                                             String serverName,
+                                             Map<String, String> props,
+                                             CallbackHandler cbh) {
+        // Skip Hauthy's own provider to avoid infinite recursion
+        // "Hauthy" == HauthySecurityProvider.PROVIDER_NAME — keep in sync if renamed
+        if ("Hauthy".equalsIgnoreCase(provider.getName())) {
+            log.debug("Skipping Hauthy provider for native GSSAPI creation to avoid recursion");
+            return null;
+        }
+
+        val service = provider.getService("SaslServerFactory", MECHANISM_GSSAPI);
+        if (service == null) {
+            return null;
+        }
+
+        try {
+            val factory = (SaslServerFactory) service.newInstance(null);
+            val server = factory.createSaslServer(
+                    MECHANISM_GSSAPI, "hbase", serverName, props, cbh);
+            if (server != null) {
+                log.debug("Created native GSSAPI server using provider: {}", provider.getName());
+            }
+            return server;
+        } catch (Exception e) {
+            log.debug("Provider {} failed to create GSSAPI server: {}",
+                    provider.getName(), e.getMessage());
+            return null;
         }
     }
 
@@ -273,19 +330,16 @@ public class DualModeSaslServer implements SaslServer {
     private byte[] initSimpleAuth(byte[] response) {
         log.info("Initializing Simple auth for client {} (migration mode)", clientAddress);
 
-        // Create a simple "pass-through" SASL server
-        delegateSaslServer = new SimpleSaslServer(response, config);
+        delegateSaslServer.set(new SimpleSaslServer(response, config));
         this.simpleMode = true;
-
-        // Simple auth completes immediately
-        this.isComplete = true;
-        this.authorizationId = extractSimpleUsername(response);
+        this.isComplete.set(true);
+        this.authorizationId.set(extractSimpleUsername(response));
 
         metrics.recordSimpleSuccess();
         log.info("Simple auth successful for client {} as user '{}'",
-                clientAddress, authorizationId);
+                clientAddress, authorizationId.get());
 
-        return null; // No challenge needed
+        return new byte[0];
     }
 
     /**
@@ -298,14 +352,13 @@ public class DualModeSaslServer implements SaslServer {
 
         if (response != null && response.length > 0) {
             try {
-                final var responseStr = new String(response, StandardCharsets.UTF_8);
-                // Simple protocol: first token might be username
-                final var parts = responseStr.split("\0");
+                val responseStr = new String(response, StandardCharsets.UTF_8);
+                val parts = responseStr.split("\0");
                 if (parts.length > 0 && !parts[0].isEmpty()) {
                     return parts[0];
                 }
             } catch (Exception e) {
-                // Ignore - use default
+                log.debug("Username extraction failed, using the default one and moving ahead");
             }
         }
 
@@ -316,16 +369,17 @@ public class DualModeSaslServer implements SaslServer {
      * Delegate response evaluation to the selected SASL server.
      */
     private byte[] delegateEvaluateResponse(byte[] response) throws SaslException {
-        final var challenge = delegateSaslServer.evaluateResponse(response);
+        val delegate = delegateSaslServer.get();
+        val challenge = delegate.evaluateResponse(response);
 
-        if (delegateSaslServer.isComplete()) {
-            this.isComplete = true;
-            this.authorizationId = delegateSaslServer.getAuthorizationID();
+        if (delegate.isComplete()) {
+            this.isComplete.set(true);
+            this.authorizationId.set(delegate.getAuthorizationID());
 
-            if (selectedAuthMode == AuthMode.KERBEROS) {
+            if (selectedAuthMode.get() == AuthMode.KERBEROS) {
                 metrics.recordKerberosSuccess();
                 log.info("Kerberos auth successful for client {} as '{}'",
-                        clientAddress, authorizationId);
+                        clientAddress, authorizationId.get());
             }
         }
 
@@ -338,10 +392,9 @@ public class DualModeSaslServer implements SaslServer {
     private String getServerName() {
         if (serverPrincipal != null && serverPrincipal.contains("/")) {
             // Extract hostname from principal (e.g., "hbase/hostname@REALM" -> "hostname")
-            final var parts = serverPrincipal.split("/");
+            val parts = serverPrincipal.split("/");
             if (parts.length > 1) {
-                final var hostRealm = parts[1];
-                return hostRealm.split("@")[0];
+                return parts[1].split("@")[0];
             }
         }
         try {
@@ -354,26 +407,28 @@ public class DualModeSaslServer implements SaslServer {
 
     @Override
     public boolean isComplete() {
-        return isComplete;
+        return isComplete.get();
     }
 
     @Override
     public String getAuthorizationID() {
-        return authorizationId;
+        return authorizationId.get();
     }
 
     @Override
     public String getMechanismName() {
-        if (selectedAuthMode == null) {
+        val mode = selectedAuthMode.get();
+        if (mode == null) {
             return "DUAL-MODE";
         }
-        return selectedAuthMode.getSaslMechanism();
+        return mode.getSaslMechanism();
     }
 
     @Override
     public Object getNegotiatedProperty(String propName) {
-        if (delegateSaslServer != null) {
-            return delegateSaslServer.getNegotiatedProperty(propName);
+        val delegate = delegateSaslServer.get();
+        if (delegate != null) {
+            return delegate.getNegotiatedProperty(propName);
         }
         return null;
     }
@@ -382,12 +437,13 @@ public class DualModeSaslServer implements SaslServer {
     public byte[] unwrap(byte[] incoming, int offset, int len) throws SaslException {
         if (simpleMode) {
             // Simple mode - no wrapping
-            final var result = new byte[len];
+            val result = new byte[len];
             System.arraycopy(incoming, offset, result, 0, len);
             return result;
         }
-        if (delegateSaslServer != null) {
-            return delegateSaslServer.unwrap(incoming, offset, len);
+        val delegate = delegateSaslServer.get();
+        if (delegate != null) {
+            return delegate.unwrap(incoming, offset, len);
         }
         throw new SaslException("SASL server not initialized");
     }
@@ -396,20 +452,22 @@ public class DualModeSaslServer implements SaslServer {
     public byte[] wrap(byte[] outgoing, int offset, int len) throws SaslException {
         if (simpleMode) {
             // Simple mode - no wrapping
-            final var result = new byte[len];
+            val result = new byte[len];
             System.arraycopy(outgoing, offset, result, 0, len);
             return result;
         }
-        if (delegateSaslServer != null) {
-            return delegateSaslServer.wrap(outgoing, offset, len);
+        val delegate = delegateSaslServer.get();
+        if (delegate != null) {
+            return delegate.wrap(outgoing, offset, len);
         }
         throw new SaslException("SASL server not initialized");
     }
 
     @Override
     public void dispose() throws SaslException {
-        if (delegateSaslServer != null) {
-            delegateSaslServer.dispose();
+        val delegate = delegateSaslServer.get();
+        if (delegate != null) {
+            delegate.dispose();
         }
         metrics.connectionClosed();
     }
@@ -424,8 +482,8 @@ public class DualModeSaslServer implements SaslServer {
         SimpleSaslServer(byte[] initialResponse, HauthyConfig config) {
             if (initialResponse != null && initialResponse.length > 0 && config.isSimpleUserMapping()) {
                 try {
-                    final var response = new String(initialResponse, StandardCharsets.UTF_8);
-                    final var parts = response.split("\0");
+                    val response = new String(initialResponse, StandardCharsets.UTF_8);
+                    val parts = response.split("\0");
                     this.authorizationId = parts.length > 0 && !parts[0].isEmpty()
                             ? parts[0]
                             : config.getSimpleDefaultUser();
@@ -439,7 +497,7 @@ public class DualModeSaslServer implements SaslServer {
 
         @Override
         public byte[] evaluateResponse(byte[] response) {
-            return null; // No challenge
+            return new byte[0]; // No challenge
         }
 
         @Override
@@ -454,7 +512,7 @@ public class DualModeSaslServer implements SaslServer {
 
         @Override
         public String getMechanismName() {
-            return "SIMPLE";
+            return AuthMode.SIMPLE.name();
         }
 
         @Override
@@ -467,14 +525,14 @@ public class DualModeSaslServer implements SaslServer {
 
         @Override
         public byte[] unwrap(byte[] incoming, int offset, int len) {
-            final var result = new byte[len];
+            val result = new byte[len];
             System.arraycopy(incoming, offset, result, 0, len);
             return result;
         }
 
         @Override
         public byte[] wrap(byte[] outgoing, int offset, int len) {
-            final var result = new byte[len];
+            val result = new byte[len];
             System.arraycopy(outgoing, offset, result, 0, len);
             return result;
         }

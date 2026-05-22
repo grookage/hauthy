@@ -1,35 +1,21 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.factory;
 
 import com.grookage.hauthy.core.DualModeSaslServer;
 import com.grookage.hauthy.core.HauthyConfig;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 
 import javax.security.auth.Subject;
 import javax.security.auth.callback.CallbackHandler;
 import javax.security.sasl.SaslServer;
 import javax.security.sasl.SaslServerFactory;
+import java.util.Arrays;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Factory for creating {@link DualModeSaslServer} instances.
+ * Factory for creating {@link com.grookage.hauthy.core.DualModeSaslServer} instances.
  *
  * <p>This factory is registered via the Java Security SPI mechanism
  * and is invoked by HBase when creating SASL servers for incoming connections.</p>
@@ -48,7 +34,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * DualModeSaslServerFactory.initialize(conf, serverSubject, principal);
  * }</pre>
  */
-@SuppressWarnings("unused")
 @Slf4j
 public class DualModeSaslServerFactory implements SaslServerFactory {
 
@@ -56,13 +41,11 @@ public class DualModeSaslServerFactory implements SaslServerFactory {
             "GSSAPI", "PLAIN", "SIMPLE", "ANONYMOUS", "DUAL-MODE"
     };
 
-    // Shared state (initialized once per JVM)
-    private static final AtomicReference<HauthyConfig> config = new AtomicReference<>();
-    private static final AtomicReference<Subject> serverSubject = new AtomicReference<>();
-    private static final AtomicReference<String> serverPrincipal = new AtomicReference<>();
-    private static final AtomicBoolean initialized = new AtomicBoolean(false);
-
-    private static final Object INIT_LOCK = new Object();
+    private static final ReentrantLock lock = new ReentrantLock();
+    private static HauthyConfig config;
+    private static Subject serverSubject;
+    private static String serverPrincipal;
+    private static boolean initialized = false;
 
     /**
      * Initialize with a pre-built HauthyConfig.
@@ -72,40 +55,37 @@ public class DualModeSaslServerFactory implements SaslServerFactory {
      * @param principal    Kerberos principal name
      */
     public static void initialize(HauthyConfig hauthyConfig, Subject subject, String principal) {
-        synchronized (INIT_LOCK) {
-            if (initialized.get()) {
+        lock.lock();
+        try {
+            if (initialized) {
                 log.debug("DualModeSaslServerFactory already initialized");
                 return;
             }
 
-            config.set(hauthyConfig);
-            serverSubject.set(subject);
-            serverPrincipal.set(principal);
-            initialized.set(true);
+            config = hauthyConfig;
+            serverSubject = subject;
+            serverPrincipal = principal;
+            initialized = true;
 
             log.info("DualModeSaslServerFactory initialized with custom config");
+        } finally {
+            lock.unlock();
         }
-    }
-
-    /**
-     * Check if the factory has been initialized.
-     *
-     * @return true if initialized
-     */
-    public static boolean isInitialized() {
-        return initialized.get();
     }
 
     /**
      * Reset the factory (for testing).
      */
     public static void reset() {
-        synchronized (INIT_LOCK) {
-            config.set(null);
-            serverSubject.set(null);
-            serverPrincipal.set(null);
-            initialized.set(false);
+        lock.lock();
+        try {
+            config = null;
+            serverSubject = null;
+            serverPrincipal = null;
+            initialized = false;
             log.info("DualModeSaslServerFactory reset");
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -115,30 +95,24 @@ public class DualModeSaslServerFactory implements SaslServerFactory {
                                        String serverName,
                                        Map<String, ?> props,
                                        CallbackHandler cbh) {
-
         log.debug("createSaslServer called - mechanism: {}, protocol: {}, server: {}",
                 mechanism, protocol, serverName);
-
-        // Only handle supported mechanisms
         if (!isSupportedMechanism(mechanism)) {
             log.debug("Mechanism {} not supported by DualModeSaslServerFactory", mechanism);
             return null;
         }
-
-        // Get configuration
-        var effectiveConfig = config.get();
-        if (effectiveConfig == null) {
-            effectiveConfig = HauthyConfig.fromConfiguration(HBaseConfiguration.create());
+        lock.lock();
+        try {
+            val effectiveConfig = null != config ? config
+                    : HauthyConfig.fromConfiguration(HBaseConfiguration.create());
+            if (!effectiveConfig.isEnabled()) {
+                log.debug("Hauthy dual-mode not enabled, returning null");
+                return null;
+            }
+            return new DualModeSaslServer(effectiveConfig, serverPrincipal, serverSubject, cbh);
+        } finally {
+            lock.unlock();
         }
-
-        // Check if dual-mode is enabled
-        if (!effectiveConfig.isEnabled()) {
-            log.debug("Hauthy dual-mode not enabled, returning null");
-            return null;
-        }
-
-        // Create and return dual-mode SASL server
-        return new DualModeSaslServer(effectiveConfig, serverPrincipal.get(), serverSubject.get(), cbh);
     }
 
     @Override
@@ -150,14 +124,9 @@ public class DualModeSaslServerFactory implements SaslServerFactory {
      * Check if the given mechanism is supported by this factory.
      */
     private boolean isSupportedMechanism(String mechanism) {
-        if (mechanism == null) {
-            return true; // Accept null as "auto-detect"
-        }
-        for (String supported : MECHANISMS) {
-            if (supported.equalsIgnoreCase(mechanism)) {
-                return true;
-            }
-        }
-        return false;
+        return mechanism == null ||
+                Arrays.stream(MECHANISMS)
+                        .anyMatch(supported ->
+                                supported.equalsIgnoreCase(mechanism)); // Accept null as "auto-detect"
     }
 }

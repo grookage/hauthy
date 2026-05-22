@@ -34,11 +34,11 @@
         <hbase.version>2.4.17</hbase.version>
         <hadoop.version>3.3.4</hadoop.version>
         <slf4j.version>1.7.36</slf4j.version>
-        <lombok.version>1.18.34</lombok.version>
+        <lombok.version>1.18.38</lombok.version>
 
         <!-- Test dependencies -->
         <junit.jupiter.version>5.10.1</junit.jupiter.version>
-        <mockito.version>5.8.0</mockito.version>
+        <mockito.version>5.18.0</mockito.version>
     </properties>
 
     <dependencies>
@@ -146,14 +146,14 @@
                     <release>${java.version}</release>
                     <source>${java.version}</source>
                     <target>${java.version}</target>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
                 </configuration>
-                <dependencies>
-                    <dependency>
-                        <artifactId>asm</artifactId>
-                        <groupId>org.ow2.asm</groupId>
-                        <version>7.2</version>
-                    </dependency>
-                </dependencies>
                 <groupId>org.apache.maven.plugins</groupId>
                 <version>${maven.compiler.version}</version>
             </plugin>
@@ -189,7 +189,7 @@
                     </execution>
                 </executions>
                 <configuration>
-                    <argLine>-Djava.security.krb5.conf=${project.basedir}/src/test/resources/krb5.conf</argLine>
+                    <argLine>-Djava.security.krb5.conf=${project.basedir}/src/test/resources/krb5.conf -Dnet.bytebuddy.experimental=true</argLine>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>

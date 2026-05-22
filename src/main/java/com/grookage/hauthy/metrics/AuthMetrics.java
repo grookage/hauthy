@@ -1,27 +1,12 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.metrics;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 
 import javax.management.ObjectName;
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Metrics for dual-mode authentication.
@@ -51,14 +36,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * System.out.println("Migration progress: " + progress + "% using Kerberos");
  * }</pre>
  */
+@SuppressWarnings("unused")
 @Slf4j
 public class AuthMetrics implements AuthMetricsMXBean {
 
     private static final String JMX_OBJECT_NAME = "com.grookage.hauthy:type=AuthMetrics";
-
-    // Singleton instance
-    private static final AtomicReference<AuthMetrics> instance = new AtomicReference<>();
-    private static final Object LOCK = new Object();
+    //Eager init is fine, don't need lazy loading here and it simplifies JMX registration
+    private static final AuthMetrics INSTANCE = new AuthMetrics();
 
     // Counters
     private final AtomicLong kerberosAuthSuccess = new AtomicLong(0);
@@ -67,6 +51,7 @@ public class AuthMetrics implements AuthMetricsMXBean {
     private final AtomicLong simpleAuthRejected = new AtomicLong(0);
     private final AtomicLong totalConnections = new AtomicLong(0);
     private final AtomicLong activeConnections = new AtomicLong(0);
+    private final AtomicLong zkSaslNoOpFallback = new AtomicLong(0);
 
     // JMX registration status
     @Getter
@@ -82,17 +67,7 @@ public class AuthMetrics implements AuthMetricsMXBean {
      * @return AuthMetrics instance
      */
     public static AuthMetrics getInstance() {
-        var result = instance.get();
-        if (result == null) {
-            synchronized (LOCK) {
-                result = instance.get();
-                if (result == null) {
-                    result = new AuthMetrics();
-                    instance.set(result);
-                }
-            }
-        }
-        return result;
+        return INSTANCE;
     }
 
     /**
@@ -100,8 +75,8 @@ public class AuthMetrics implements AuthMetricsMXBean {
      */
     private void registerJmx() {
         try {
-            final var mbs = ManagementFactory.getPlatformMBeanServer();
-            final var name = new ObjectName(JMX_OBJECT_NAME);
+            val mbs = ManagementFactory.getPlatformMBeanServer();
+            val name = new ObjectName(JMX_OBJECT_NAME);
 
             // Unregister if already registered
             if (mbs.isRegistered(name)) {
@@ -116,7 +91,6 @@ public class AuthMetrics implements AuthMetricsMXBean {
         }
     }
 
-    // ==================== Recording Methods ====================
 
     /**
      * Record a successful Kerberos authentication.
@@ -124,6 +98,7 @@ public class AuthMetrics implements AuthMetricsMXBean {
     public void recordKerberosSuccess() {
         kerberosAuthSuccess.incrementAndGet();
         totalConnections.incrementAndGet();
+        activeConnections.incrementAndGet();
     }
 
     /**
@@ -139,6 +114,7 @@ public class AuthMetrics implements AuthMetricsMXBean {
     public void recordSimpleSuccess() {
         simpleAuthSuccess.incrementAndGet();
         totalConnections.incrementAndGet();
+        activeConnections.incrementAndGet();
     }
 
     /**
@@ -162,7 +138,12 @@ public class AuthMetrics implements AuthMetricsMXBean {
         activeConnections.decrementAndGet();
     }
 
-    // ==================== MXBean Getters ====================
+    /**
+     * Record a ZK SASL no-op fallback (DualModeSaslClient detected server-not-found in KDC).
+     */
+    public void recordZkSaslNoOpFallback() {
+        zkSaslNoOpFallback.incrementAndGet();
+    }
 
     @Override
     public long getKerberosAuthSuccess() {
@@ -196,9 +177,9 @@ public class AuthMetrics implements AuthMetricsMXBean {
 
     @Override
     public double getKerberosPercentage() {
-        final var kerberos = kerberosAuthSuccess.get();
-        final var simple = simpleAuthSuccess.get();
-        final var total = kerberos + simple;
+        val kerberos = kerberosAuthSuccess.get();
+        val simple = simpleAuthSuccess.get();
+        val total = kerberos + simple;
 
         if (total == 0) {
             return 0.0;
@@ -207,7 +188,10 @@ public class AuthMetrics implements AuthMetricsMXBean {
         return (kerberos * 100.0) / total;
     }
 
-    // ==================== Utility Methods ====================
+    @Override
+    public long getZkSaslNoOpFallback() {
+        return zkSaslNoOpFallback.get();
+    }
 
     /**
      * Get a formatted summary of current metrics.
@@ -303,7 +287,7 @@ public class AuthMetrics implements AuthMetricsMXBean {
             this.activeConnections = activeConnections;
             this.timestamp = System.currentTimeMillis();
 
-            final var total = kerberosSuccess + simpleSuccess;
+            long total = kerberosSuccess + simpleSuccess;
             this.kerberosPercentage = total > 0 ? (kerberosSuccess * 100.0) / total : 0.0;
         }
     }

@@ -1,191 +1,183 @@
-/*
- * Copyright 2026 grookage
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.grookage.hauthy.core;
 
+import lombok.val;
 import org.apache.hadoop.conf.Configuration;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 
-/**
- * Unit tests for {@link HauthyConfig}.
- */
+import static org.junit.jupiter.api.Assertions.*;
+
 class HauthyConfigTest {
 
     @Test
-    void shouldReturnDefaultConfigValues() {
-        final var config = HauthyConfig.builder().build();
-
-        Assertions.assertFalse(config.isEnabled());
-        Assertions.assertTrue(config.isAllowSimple());
-        Assertions.assertTrue(config.isAllowKerberos());
-        Assertions.assertEquals("hbase", config.getSimpleDefaultUser());
-        Assertions.assertTrue(config.isSimpleUserMapping());
-        Assertions.assertTrue(config.isMetricsEnabled());
+    public void testDefaultConfig() {
+        val config = HauthyConfig.builder().build();
+        assertFalse(config.isEnabled());
+        assertTrue(config.isAllowSimple());
+        assertTrue(config.isAllowKerberos());
+        assertEquals("hbase", config.getSimpleDefaultUser());
+        assertTrue(config.isSimpleUserMapping());
+        assertTrue(config.isMetricsEnabled());
     }
 
     @Test
-    void shouldLoadConfigFromHadoopConfiguration() {
-        final var conf = new Configuration();
+    public void testFromConfiguration() {
+        val conf = new Configuration();
         conf.setBoolean(HauthyConfig.HAUTHY_ENABLED, true);
         conf.setBoolean(HauthyConfig.ALLOW_SIMPLE, false);
         conf.setBoolean(HauthyConfig.ALLOW_KERBEROS, true);
         conf.set(HauthyConfig.SIMPLE_DEFAULT_USER, "testuser");
         conf.set(HauthyConfig.SIMPLE_ALLOWED_HOSTS, "192.168.1.*,10.0.0.1");
 
-        final var config = HauthyConfig.fromConfiguration(conf);
+        HauthyConfig config = HauthyConfig.fromConfiguration(conf);
 
-        Assertions.assertTrue(config.isEnabled());
-        Assertions.assertFalse(config.isAllowSimple());
-        Assertions.assertTrue(config.isAllowKerberos());
-        Assertions.assertEquals("testuser", config.getSimpleDefaultUser());
-        Assertions.assertTrue(config.getSimpleAllowedHosts().contains("192.168.1.*"));
-        Assertions.assertTrue(config.getSimpleAllowedHosts().contains("10.0.0.1"));
+        assertTrue(config.isEnabled());
+        assertFalse(config.isAllowSimple());
+        assertTrue(config.isAllowKerberos());
+        assertEquals("testuser", config.getSimpleDefaultUser());
+        assertTrue(config.getSimpleAllowedHosts().contains("192.168.1.*"));
+        assertTrue(config.getSimpleAllowedHosts().contains("10.0.0.1"));
     }
 
     @Test
-    void shouldReturnDefaultConfigForNullConfiguration() {
-        final var config = HauthyConfig.fromConfiguration(null);
+    public void testFromConfigurationNull() {
+        val config = HauthyConfig.fromConfiguration(null);
 
-        Assertions.assertFalse(config.isEnabled());
-        Assertions.assertTrue(config.isAllowSimple());
+        assertFalse(config.isEnabled());
+        assertTrue(config.isAllowSimple());
     }
 
     @Test
-    void shouldAllowAllHostsWhenWildcardConfigured() {
-        final var conf = new Configuration();
+    public void testFromConfigurationAllowAllHosts() {
+        val conf = new Configuration();
         conf.set(HauthyConfig.SIMPLE_ALLOWED_HOSTS, "*");
 
-        final var config = HauthyConfig.fromConfiguration(conf);
+        val config = HauthyConfig.fromConfiguration(conf);
 
-        Assertions.assertTrue(config.getSimpleAllowedHosts().isEmpty());
+        assertTrue(config.getSimpleAllowedHosts().isEmpty());
     }
 
     @Test
-    void shouldAllowAllHostsWhenSetIsEmpty() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostAllHostsAllowed() {
+        val config = HauthyConfig.builder()
                 .allowSimple(true)
-                .simpleAllowedHosts(Set.of())
+                .simpleAllowedHosts(new HashSet<>())
                 .build();
 
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("10.0.0.1"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("any.host.com"));
+        assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
+        assertTrue(config.isSimpleAuthAllowedForHost("10.0.0.1"));
+        assertTrue(config.isSimpleAuthAllowedForHost("any.host.com"));
     }
 
     @Test
-    void shouldMatchExactHostAddress() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostExactMatch() {
+        val config = HauthyConfig.builder()
                 .allowSimple(true)
-                .simpleAllowedHosts(Set.of("192.168.1.100", "10.0.0.1"))
+                .simpleAllowedHosts(new HashSet<>(Arrays.asList("192.168.1.100", "10.0.0.1")))
                 .build();
 
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("10.0.0.1"));
-        Assertions.assertFalse(config.isSimpleAuthAllowedForHost("192.168.1.101"));
+        assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
+        assertTrue(config.isSimpleAuthAllowedForHost("10.0.0.1"));
+        assertFalse(config.isSimpleAuthAllowedForHost("192.168.1.101"));
     }
 
     @Test
-    void shouldMatchWildcardHostPattern() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostWildcardMatch() {
+        val config = HauthyConfig.builder()
                 .allowSimple(true)
-                .simpleAllowedHosts(Set.of("192.168.1.*", "10.0.*"))
+                .simpleAllowedHosts(new HashSet<>(Arrays.asList("192.168.1.*", "10.0.*")))
                 .build();
 
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.1"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("10.0.1.1"));
-        Assertions.assertTrue(config.isSimpleAuthAllowedForHost("10.0.255.255"));
-        Assertions.assertFalse(config.isSimpleAuthAllowedForHost("192.168.2.1"));
-        Assertions.assertFalse(config.isSimpleAuthAllowedForHost("11.0.0.1"));
+        assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.100"));
+        assertTrue(config.isSimpleAuthAllowedForHost("192.168.1.1"));
+        assertTrue(config.isSimpleAuthAllowedForHost("10.0.1.1"));
+        assertTrue(config.isSimpleAuthAllowedForHost("10.0.255.255"));
+        assertFalse(config.isSimpleAuthAllowedForHost("192.168.2.1"));
+        assertFalse(config.isSimpleAuthAllowedForHost("11.0.0.1"));
     }
 
     @Test
-    void shouldRejectAllHostsWhenSimpleDisabled() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostSimpleDisabled() {
+        val config = HauthyConfig.builder()
                 .allowSimple(false)
                 .build();
 
-        Assertions.assertFalse(config.isSimpleAuthAllowedForHost("192.168.1.100"));
+        assertFalse(config.isSimpleAuthAllowedForHost("192.168.1.100"));
     }
 
     @Test
-    void shouldRejectNullHost() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostNullHost() {
+        val config = HauthyConfig.builder()
                 .allowSimple(true)
-                .simpleAllowedHosts(Set.of("192.168.1.*"))
+                .simpleAllowedHosts(new HashSet<>(Collections.singletonList("192.168.1.*")))
                 .build();
 
-        Assertions.assertFalse(config.isSimpleAuthAllowedForHost(null));
+        assertFalse(config.isSimpleAuthAllowedForHost(null));
     }
 
     @Test
-    void shouldValidateWhenBothAuthModesEnabled() {
-        final var config = HauthyConfig.builder()
+    public void testIsSimpleAuthAllowedForHostLeadingWildcard() {
+        val config = HauthyConfig.builder()
+                .allowSimple(true)
+                .simpleAllowedHosts(new HashSet<>(Collections.singletonList("*.internal.example.com")))
+                .build();
+
+        assertTrue(config.isSimpleAuthAllowedForHost("host1.internal.example.com"));
+        assertTrue(config.isSimpleAuthAllowedForHost("db.internal.example.com"));
+        assertFalse(config.isSimpleAuthAllowedForHost("host1.external.example.com"));
+        assertFalse(config.isSimpleAuthAllowedForHost("internal.example.com.evil.org"));
+    }
+
+    @Test
+    public void testValidateValid() {
+        val config = HauthyConfig.builder()
                 .enabled(true)
                 .allowSimple(true)
                 .allowKerberos(true)
                 .build();
-
-        Assertions.assertDoesNotThrow(config::validate);
+        assertDoesNotThrow(config::validate);
     }
 
     @Test
-    void shouldValidateWhenOnlySimpleEnabled() {
-        final var config = HauthyConfig.builder()
+    public void testValidateOnlySimple() {
+        val config = HauthyConfig.builder()
                 .enabled(true)
                 .allowSimple(true)
                 .allowKerberos(false)
                 .build();
-
-        Assertions.assertDoesNotThrow(config::validate);
+        assertDoesNotThrow(config::validate);
     }
 
     @Test
-    void shouldValidateWhenOnlyKerberosEnabled() {
-        final var config = HauthyConfig.builder()
+    public void testValidateOnlyKerberos() {
+        val config = HauthyConfig.builder()
                 .enabled(true)
                 .allowSimple(false)
                 .allowKerberos(true)
                 .build();
-
-        Assertions.assertDoesNotThrow(config::validate);
+        assertDoesNotThrow(config::validate);
     }
 
     @Test
-    void shouldThrowWhenNoAuthModeEnabled() {
-        final var config = HauthyConfig.builder()
+    public void testValidateInvalidNoneAllowed() {
+        val config = HauthyConfig.builder()
                 .enabled(true)
                 .allowSimple(false)
                 .allowKerberos(false)
                 .build();
-
-        final var exception = Assertions.assertThrows(IllegalStateException.class, config::validate);
-        Assertions.assertTrue(exception.getMessage().contains("At least one auth mode must be allowed"));
+        assertThrows(IllegalStateException.class, config::validate);
     }
 
     @Test
-    void shouldNotValidateWhenDisabled() {
-        final var config = HauthyConfig.builder()
+    public void testValidateDisabledNoneAllowed() {
+        val config = HauthyConfig.builder()
                 .enabled(false)
                 .allowSimple(false)
                 .allowKerberos(false)
                 .build();
-
-        Assertions.assertDoesNotThrow(config::validate);
+        assertDoesNotThrow(config::validate);
     }
 }
