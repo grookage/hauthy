@@ -7,7 +7,7 @@
 
     <groupId>com.grookage.apps</groupId>
     <artifactId>hauthy</artifactId>
-    <version>0.0.1-RC1</version>
+    <version>0.0.1-RC2</version>
     <packaging>jar</packaging>
 
     <name>Hauthy - HBase Dual-Mode Authentication</name>
